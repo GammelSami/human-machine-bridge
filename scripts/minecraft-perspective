@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Minecraft: switch between first person and third person (back view) with one
+# button. F5 cycles first → third (back) → third (front) → first, so every other
+# press sends F5 twice to skip the front view. Ported from the old AHK setup.
+set -euo pipefail
+
+state="${XDG_RUNTIME_DIR:-/tmp}/minecraft-third-person"
+f5=63 # evdev KEY_F5
+
+if [[ -e $state ]]; then
+  rm -- "$state"
+  ydotool key "$f5:1" "$f5:0" "$f5:1" "$f5:0" >/dev/null
+else
+  touch -- "$state"
+  ydotool key "$f5:1" "$f5:0" >/dev/null
+fi

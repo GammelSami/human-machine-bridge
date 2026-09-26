@@ -1,0 +1,7 @@
+#!/bin/sh
+# Show the text in the clipboard as a QR code.
+t=$(wl-paste --no-newline --type text 2>/dev/null)
+if [ -z "$t" ]; then notify-send -i edit-paste "QR-Code" "Kein Text in der Zwischenablage"; exit 1; fi
+f="${XDG_RUNTIME_DIR:-/tmp}/clipboard-qr.png"
+if ! printf '%s' "$t" | qrencode -s 10 -m 2 -o "$f"; then notify-send -i dialog-error "QR-Code" "Text ist zu lang für einen QR-Code"; exit 1; fi
+exec loupe "$f"

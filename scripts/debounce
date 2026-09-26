@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Usage: debounce <name> <ms> <command> [args…]
+# Runs the command unless a call with the same <name> happened less than <ms> ago.
+# keymapper grabs mice before libinput, so libinput's switch debouncing does not
+# apply to mapped mouse buttons – a single click can arrive twice.
+set -euo pipefail
+
+name=$1 window_ms=$2
+shift 2
+state="${XDG_RUNTIME_DIR:-/tmp}/debounce-$name"
+
+exec 9>"$state.lock"
+flock -n 9 || exit 0
+
+now=$(date +%s%3N)
+last=$(cat "$state.last" 2>/dev/null || echo 0)
+(( now - last < window_ms )) && exit 0
+echo "$now" >"$state.last"
+
+exec 9>&-
+exec "$@"
