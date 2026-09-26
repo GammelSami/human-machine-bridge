@@ -31,6 +31,8 @@ snippets, dictation.
   `debounce` (generic, for mouse-button actions), `minecraft-perspective`,
   `clipboard-qr` (also symlinked to `~/.local/bin/`), `teamspeak-action`,
   `teamspeak-hotkey`, `teamspeak3-hotkey`, `handy-teamspeak`.
+- `scripts/transcribe` – transcribes media files with Handy; symlinked to
+  `~/bin/transcribe`.
 - `run-or-raise/shortcuts.conf` → `~/.config/run-or-raise/shortcuts.conf` – launch/raise
   apps by shortcut (GNOME-specific window layer).
 - `immich-screenshots/` → `~/.config/immich-screenshots` – screenshot upload to Immich;

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Symlinks the configs in this repo to where the programs expect them.
+# Symlinks the configs and commands in this repo to their expected paths.
 # Idempotent; existing real files are moved to *.bak-<date> first, never deleted.
 set -euo pipefail
 
@@ -25,5 +25,6 @@ link espanso                   "$HOME/.config/espanso"
 link keymapper/keymapper.conf  "$HOME/.config/keymapper.conf"
 link run-or-raise/shortcuts.conf "$HOME/.config/run-or-raise/shortcuts.conf"
 link scripts/clipboard-qr "$HOME/.local/bin/clipboard-qr"
+link scripts/transcribe "$HOME/bin/transcribe"
 link immich-screenshots "$HOME/.config/immich-screenshots"
 link immich-screenshots/immich-screenshots.service "$HOME/.config/systemd/user/immich-screenshots.service"

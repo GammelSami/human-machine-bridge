@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# Transcribe audio or video files with Handy's selected model.
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Usage: transcribe <media-file> [language] [--output-file <path>]
+
+Arguments:
+  media-file     Path to an audio or video file
+  language       Optional legacy argument; Handy detects the language automatically
+
+Options:
+  --output-file  Write the transcript to this file instead of stdout
+  --help         Show this help message
+
+Examples:
+  transcribe voice.ogg
+  transcribe video.mp4 --output-file /tmp/result.txt
+EOF
+}
+
+if [[ $# -eq 0 || ${1:-} == --help ]]; then
+    usage
+    exit 0
+fi
+
+input=$1
+shift
+language=auto
+output_file=
+
+if [[ $# -gt 0 && $1 != --* ]]; then
+    language=$1
+    shift
+fi
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --output-file)
+            if [[ $# -lt 2 || -z $2 ]]; then
+                echo 'transcribe: --output-file requires a path' >&2
+                exit 2
+            fi
+            output_file=$2
+            shift 2
+            ;;
+        --help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "transcribe: unknown option: $1" >&2
+            exit 2
+            ;;
+    esac
+done
+
+if [[ ! -f $input ]]; then
+    echo "transcribe: file not found: $input" >&2
+    exit 1
+fi
+
+if [[ $language != auto ]]; then
+    echo 'transcribe: Handy detects the language automatically; the language argument is ignored' >&2
+fi
+
+temp_wav=$(mktemp --suffix=.wav)
+temp_text=$(mktemp)
+trap 'rm -f "$temp_wav" "$temp_text"' EXIT
+
+ffmpeg -nostdin -loglevel error -i "$input" -vn -ar 16000 -ac 1 -c:a pcm_s16le -y "$temp_wav"
+handy --transcribe-file "$temp_wav" --json | python -c 'import json, sys; print(json.load(sys.stdin)["text"])' > "$temp_text"
+
+if [[ -n $output_file ]]; then
+    cp "$temp_text" "$output_file"
+else
+    cat "$temp_text"
+fi
