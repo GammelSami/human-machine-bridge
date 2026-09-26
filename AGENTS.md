@@ -101,7 +101,10 @@ snippets, dictation.
 - Game sources leave the Immich archive state untouched; only sources with
   `archive = true` archive, and only the assets of the files just uploaded.
 - immich-go 0.32 uploads, creates albums and sets tags, but cannot set a
-  description or archive; the script does both via the Immich API afterwards.
+  description or archive, and skips album and tags for assets already on the
+  server ("server has duplicate"). The script covers all three via the Immich API.
+- Immich's metadata extraction runs seconds after an upload and overwrites the
+  description, so the script sets it only once the asset has its image size.
 - GPU Screen Recorder screenshots only reach the `~/Bilder/Screenshots` sources
   if its UI saves there (`screenshot.save_directory`, "save in game folder").
 

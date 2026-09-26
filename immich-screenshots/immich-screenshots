@@ -31,6 +31,7 @@ HERE = Path(__file__).resolve().parent
 STATE_FILE = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "immich-screenshots/state.json"
 SETTLE = 3      # seconds a file must stay unchanged before it is uploaded
 RESCAN = 900    # full rescan: catches missed events and retries failed uploads
+DESCRIBE_DELAY, DESCRIBE_TRIES = 20, 30  # waiting for Immich's metadata extraction
 EX_CONFIG = 78  # the unit does not restart on this exit code
 
 IN_CLOSE_WRITE, IN_MOVED_TO, IN_CREATE = 0x8, 0x80, 0x100
@@ -264,6 +265,7 @@ class Uploader:
         self.inotify = Inotify()
         self.full_dirs = {}  # dir → (rule, captures)
         self.pending = {}    # path → (deadline, (size, mtime))
+        self.describe_queue = []  # [due, asset id, path, tries]
         try:
             self.state = json.loads(STATE_FILE.read_text())
         except FileNotFoundError:
@@ -336,7 +338,8 @@ class Uploader:
         except OSError:
             return
         sig = [st.st_size, st.st_mtime_ns]
-        if st.st_size == 0 or self.state["done"].get(str(path)) == sig:
+        if (st.st_size == 0 or self.state["done"].get(str(path)) == sig
+                or any(q[2] == path for q in self.describe_queue)):
             return
         self.pending[path] = (time.monotonic() + SETTLE, sig)
 
@@ -371,6 +374,9 @@ class Uploader:
             log(f"  {f}")
         if self.dry_run:
             return
+        checksums = [sha1(f) for f in files]
+        # immich-go skips album and tags for assets already on the server; remember those.
+        existing = {i for i, r in self.check(checksums).items() if r.get("assetId")}
         # Tags are a CSV list for immich-go, so quote tags containing commas.
         tag_args = [f'--tag="{t}"' if "," in t else f"--tag={t}" for t in tags]
         cmd = ["immich-go", "upload", "from-folder", "--no-ui", "--pause-immich-jobs=false",
@@ -386,36 +392,87 @@ class Uploader:
             log(f"  immich-go exited with {res.returncode}, retrying on the next rescan: " + " | ".join(error)[-1000:])
             return  # files already on the server may lack album and tags
 
-        # Find the assets by checksum, then set description and visibility.
-        items = [{"id": str(i), "checksum": sha1(f)} for i, f in enumerate(files)]
-        results = self.immich.api("POST", "/assets/bulk-upload-check", {"assets": items})["results"]
-        ids = []
-        for r in results:
-            f = files[int(r["id"])]
+        # Find the assets by checksum, then set album, tags, description and visibility.
+        ids, known = [], []
+        for i, r in self.check(checksums).items():
+            f = files[i]
             asset = r.get("assetId")
             if not asset:
                 log(f"  not on the server ({r.get('reason') or r['action']}), retrying later: {f}")
                 continue
             if r.get("isTrashed"):
                 log(f"  asset is in the Immich trash, skipped: {f}")
-            else:
-                info = self.immich.api("GET", f"/assets/{asset}")
-                if not ((info.get("exifInfo") or {}).get("description") or "").strip():
-                    self.immich.api("PUT", f"/assets/{asset}", {"description": str(f)})
-                ids.append(asset)
-            st = f.stat()
-            self.state["done"][str(f)] = [st.st_size, st.st_mtime_ns]
+                self.mark_done(f)
+                continue
+            ids.append(asset)
+            if i in existing:
+                known.append(asset)
+            # The file counts as done once its description is set, see describe().
+            self.describe_queue.append([time.monotonic(), asset, f, 0])
+        if known:
+            self.add_to_album(album, known)
+            if tags:
+                tag_ids = [t["id"] for t in self.immich.api("PUT", "/tags", {"tags": list(tags)})]
+                self.immich.api("PUT", "/tags/assets", {"assetIds": known, "tagIds": tag_ids})
         if archive and ids:
             self.immich.api("PUT", "/assets", {"ids": ids, "visibility": "archive"})
         log(f"  done: {len(ids)} asset(s)" + (" archived" if archive and ids else ""))
-        self.save_state()
+        self.describe()
+
+    def mark_done(self, path):
+        try:
+            st = path.stat()
+            self.state["done"][str(path)] = [st.st_size, st.st_mtime_ns]
+        except OSError:
+            pass
+
+    def describe(self):
+        """Put the original path into the description of queued assets.
+
+        Immich's metadata extraction runs after the upload and overwrites the
+        description, so new assets wait until it has filled in the image size.
+        """
+        now, queue, changed = time.monotonic(), [], False
+        for item in self.describe_queue:
+            due, asset, path, tries = item
+            if due > now:
+                queue.append(item)
+                continue
+            try:
+                exif = self.immich.api("GET", f"/assets/{asset}").get("exifInfo") or {}
+                if exif.get("exifImageWidth") is None and tries < DESCRIBE_TRIES:
+                    queue.append([now + DESCRIBE_DELAY, asset, path, tries + 1])
+                    continue
+                if not (exif.get("description") or "").strip():
+                    self.immich.api("PUT", f"/assets/{asset}", {"description": str(path)})
+                self.mark_done(path)
+                changed = True
+            except (OSError, ValueError) as e:
+                log(f"setting description failed, retrying: {path}: {e}")
+                queue.append([now + DESCRIBE_DELAY, asset, path, tries + 1])
+        self.describe_queue = queue
+        if changed:
+            self.save_state()
+
+    def check(self, checksums):
+        """Server lookup by checksum: {index: result with assetId if the asset exists}."""
+        items = [{"id": str(i), "checksum": c} for i, c in enumerate(checksums)]
+        results = self.immich.api("POST", "/assets/bulk-upload-check", {"assets": items})["results"]
+        return {int(r["id"]): r for r in results}
+
+    def add_to_album(self, name, ids):
+        album = next((a for a in self.immich.api("GET", "/albums") if a["albumName"] == name), None)
+        if album:
+            self.immich.api("PUT", f"/albums/{album['id']}/assets", {"ids": ids})
+        else:
+            self.immich.api("POST", "/albums", {"albumName": name, "assetIds": ids})
 
     def run(self):
         self.sync(rescan=True)
         log(f"watching {len(self.inotify.by_path)} dir(s), {len(self.full_dirs)} with screenshots")
         next_rescan = time.monotonic() + RESCAN
         while True:
-            wake = min([d for d, _ in self.pending.values()] + [next_rescan])
+            wake = min([d for d, _ in self.pending.values()] + [q[0] for q in self.describe_queue] + [next_rescan])
             resync = False
             for directory, name, mask in self.inotify.read(max(wake - time.monotonic(), 0)):
                 if directory is None or mask & (IN_ISDIR | IN_IGNORED | IN_Q_OVERFLOW):
@@ -428,6 +485,7 @@ class Uploader:
             elif resync:
                 self.sync()
             self.process()
+            self.describe()
 
 
 def main():
@@ -445,6 +503,9 @@ def main():
     if args.once:
         uploader.sync(rescan=True)
         uploader.process(force=True)
+        while uploader.describe_queue:
+            time.sleep(max(min(q[0] for q in uploader.describe_queue) - time.monotonic(), 0))
+            uploader.describe()
     else:
         uploader.run()
 
