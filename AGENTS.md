@@ -32,6 +32,8 @@ snippets, dictation.
   `clipboard-qr` (also symlinked to `~/.local/bin/`).
 - `run-or-raise/shortcuts.conf` → `~/.config/run-or-raise/shortcuts.conf` – launch/raise
   apps by shortcut (GNOME-specific window layer).
+- `immich-screenshots/` → `~/.config/immich-screenshots` – screenshot upload to Immich;
+  its `.service` → `~/.config/systemd/user/`. Details in its `README.md`.
 
 ## Components and their quirks
 
@@ -92,6 +94,16 @@ snippets, dictation.
   short tap: a held key
   auto-repeats, Run or Raise then cycles windows continuously and GNOME Shell
   stalls (frozen mouse pointer). Do the same for other Run or Raise keys if held.
+
+### immich-screenshots
+- `.env` holds the Immich API key: it stays unread by agents and out of git.
+  Check the key's effect through the service log instead.
+- Game sources leave the Immich archive state untouched; only sources with
+  `archive = true` archive, and only the assets of the files just uploaded.
+- immich-go 0.32 uploads, creates albums and sets tags, but cannot set a
+  description or archive; the script does both via the Immich API afterwards.
+- GPU Screen Recorder screenshots only reach the `~/Bilder/Screenshots` sources
+  if its UI saves there (`screenshot.save_directory`, "save in game folder").
 
 ## GNOME Wayland limitations
 

@@ -1,0 +1,449 @@
+#!/usr/bin/env python3
+"""Upload screenshots to Immich as they appear, sorted into albums per source.
+
+Sources are rules in config.toml: a path pattern, an album, tags and whether to
+archive. Only directories that can match a pattern are watched (inotify,
+non-recursive); when a directory appears the patterns are expanded again, so
+new Prism instances or Steam games are picked up without a restart.
+
+Uploads go through immich-go. It cannot set descriptions or archive, so the
+Immich API does that afterwards, only for the assets of the uploaded files.
+"""
+import argparse
+import ctypes
+import fnmatch
+import hashlib
+import json
+import os
+import re
+import select
+import struct
+import subprocess
+import sys
+import time
+import tomllib
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+STATE_FILE = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "immich-screenshots/state.json"
+SETTLE = 3      # seconds a file must stay unchanged before it is uploaded
+RESCAN = 900    # full rescan: catches missed events and retries failed uploads
+EX_CONFIG = 78  # the unit does not restart on this exit code
+
+IN_CLOSE_WRITE, IN_MOVED_TO, IN_CREATE = 0x8, 0x80, 0x100
+IN_Q_OVERFLOW, IN_IGNORED, IN_ONLYDIR, IN_ISDIR = 0x4000, 0x8000, 0x01000000, 0x40000000
+
+
+def log(msg):
+    print(msg, flush=True)
+
+
+class Inotify:
+    """Minimal inotify binding: a set of non-recursive directory watches."""
+
+    MASK = IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE | IN_ONLYDIR
+
+    def __init__(self):
+        self.libc = ctypes.CDLL(None, use_errno=True)
+        self.fd = self.libc.inotify_init1(os.O_CLOEXEC | os.O_NONBLOCK)
+        if self.fd < 0:
+            raise OSError(ctypes.get_errno(), "inotify_init1")
+        self.by_wd, self.by_path = {}, {}
+
+    def set(self, paths):
+        for path in self.by_path.keys() - paths:
+            self.libc.inotify_rm_watch(self.fd, self.by_path.pop(path))
+        for path in paths - self.by_path.keys():
+            wd = self.libc.inotify_add_watch(self.fd, os.fsencode(path), self.MASK)
+            if wd < 0:
+                log(f"cannot watch {path}: {os.strerror(ctypes.get_errno())}")
+                continue
+            self.by_wd[wd], self.by_path[path] = path, wd
+
+    def read(self, timeout):
+        """Return [(dir, name, mask)]; dir is None for queue overflows."""
+        if not select.select([self.fd], [], [], timeout)[0]:
+            return []
+        data, events, off = os.read(self.fd, 1 << 16), [], 0
+        while off < len(data):
+            wd, mask, _, size = struct.unpack_from("iIII", data, off)
+            name = os.fsdecode(data[off + 16:off + 16 + size].rstrip(b"\0"))
+            off += 16 + size
+            if mask & IN_IGNORED:
+                path = self.by_wd.pop(wd, None)
+                if path is not None and self.by_path.get(path) == wd:
+                    del self.by_path[path]
+            events.append((self.by_wd.get(wd), name, mask))
+        return events
+
+
+class Rule:
+    """One [[source]] from the config.
+
+    Path patterns: `*` and `?` match within one directory name, `{name}`
+    matches a whole directory name and makes it available to album/tags,
+    a trailing `**` directory matches any depth. The last part is the file glob.
+    """
+
+    def __init__(self, conf):
+        self.name = conf["name"]
+        self.album = conf["album"]
+        self.tags = conf.get("tags", [])
+        self.archive = conf.get("archive", False)
+        self.backfill = conf.get("backfill", True)
+        *dirs, self.file_glob = os.path.expanduser(conf["path"]).split("/")
+        literal = 0
+        while literal < len(dirs) and not re.search(r"[*?\[{]", dirs[literal]):
+            literal += 1
+        self.root = Path("/".join(dirs[:literal]) or "/")
+        self.segs = [self._compile(seg) for seg in dirs[literal:]]
+        if "**" in self.segs[:-1]:
+            raise ValueError(f"{self.name}: '**' is only allowed as the last directory")
+        captures = {n for seg in self.segs if seg != "**" for n in seg.groupindex}
+        for template in [self.album, *self.tags]:
+            for m in re.finditer(r"\{(\w+)(?:\|(\w+))?\}", template):
+                if m.group(1) not in captures or (m.group(2) and m.group(2) not in FILTERS):
+                    raise ValueError(f"{self.name}: unknown placeholder {m.group(0)} in '{template}'")
+
+    @staticmethod
+    def _compile(seg):
+        if seg == "**":
+            return seg
+        parts = []
+        for tok in re.split(r"(\{\w+\}|\*|\?)", seg):
+            if tok == "*":
+                parts.append(".*")
+            elif tok == "?":
+                parts.append(".")
+            elif re.fullmatch(r"\{\w+\}", tok):
+                parts.append(f"(?P<{tok[1:-1]}>.+)")
+            else:
+                parts.append(re.escape(tok))
+        return re.compile("".join(parts))
+
+    def expand(self, path=None, segs=None, caps=None):
+        """Yield (dir, captures, full) for each existing dir matching a prefix of the pattern.
+
+        Files are only picked up in `full` dirs; the others are watched so that
+        newly created directories are noticed.
+        """
+        path, segs, caps = path or self.root, self.segs if segs is None else segs, caps or {}
+        if segs and segs[0] == "**":
+            for root, _, _ in os.walk(path):
+                yield Path(root), caps, True
+            return
+        yield path, caps, not segs
+        if not segs:
+            return
+        try:
+            entries = [e for e in os.scandir(path) if e.is_dir()]
+        except OSError:
+            return
+        for entry in entries:
+            m = segs[0].fullmatch(entry.name)
+            if m:
+                sub = Path(entry.path)
+                yield from self.expand(sub, segs[1:], caps | {k: sub for k in m.groupdict()})
+
+    def render(self, template, caps):
+        def sub(m):
+            name, _, filt = m.group(1).partition("|")
+            path = caps[name]
+            return FILTERS[filt](path) if filt else path.name
+        return re.sub(r"\{(\w+(?:\|\w+)?)\}", sub, template)
+
+
+def prism_instance(path):
+    """Display name of a PrismLauncher instance (folder names can differ)."""
+    try:
+        for line in (path / "instance.cfg").read_text(errors="replace").splitlines():
+            if line.startswith("name="):
+                return line[5:].strip() or path.name
+    except OSError:
+        pass
+    return path.name
+
+
+_steam_names = {}
+
+
+def steam_game(path):
+    """Game name for a Steam appid: local appmanifest, then the Store API."""
+    appid = path.name
+    if appid in _steam_names:
+        return _steam_names[appid]
+    steam = Path.home() / ".local/share/Steam"
+    libs = [steam]
+    try:
+        vdf = (steam / "steamapps/libraryfolders.vdf").read_text(errors="replace")
+        libs += [Path(p) for p in re.findall(r'"path"\s+"([^"]+)"', vdf)]
+    except OSError:
+        pass
+    name = None
+    for lib in libs:
+        try:
+            acf = (lib / f"steamapps/appmanifest_{appid}.acf").read_text(errors="replace")
+        except OSError:
+            continue
+        m = re.search(r'"name"\s+"([^"]+)"', acf)
+        if m:
+            name = m.group(1)
+            break
+    if name is None and appid.isdigit():
+        try:
+            url = f"https://store.steampowered.com/api/appdetails?appids={appid}&filters=basic"
+            with urllib.request.urlopen(url, timeout=10) as r:
+                # Keyed by some other id at times (620 → "323180"), so take the only entry.
+                data = next(iter(json.load(r).values()), {})
+            if data.get("success"):
+                name = data["data"]["name"]
+        except (OSError, ValueError, KeyError) as e:
+            log(f"Steam name lookup for {appid} failed: {e}")
+    if name is None:  # not cached, the next screenshot tries again
+        return f"Steam {appid}"
+    name = re.sub(r"[™®©]", "", name).strip()
+    _steam_names[appid] = name
+    return name
+
+
+FILTERS = {"prism": prism_instance, "steam": steam_game}
+
+
+class Immich:
+    def __init__(self, url, key):
+        self.url, self.key = url.rstrip("/"), key
+
+    def api(self, method, path, body=None):
+        req = urllib.request.Request(
+            f"{self.url}/api{path}", method=method,
+            data=None if body is None else json.dumps(body).encode(),
+            headers={"x-api-key": self.key, "Content-Type": "application/json", "Accept": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                raw = r.read()
+        except urllib.error.HTTPError as e:  # the body names e.g. a missing API key permission
+            raise OSError(f"{method} /api{path}: HTTP {e.code} {e.read().decode(errors='replace')[:500]}") from None
+        return json.loads(raw) if raw else None
+
+
+def sha1(path):
+    h = hashlib.sha1()
+    with open(path, "rb") as f:
+        while chunk := f.read(1 << 20):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def load_credentials():
+    """IMMICH_SERVER_URL and IMMICH_API_KEY from the environment or .env next to this script."""
+    env = {}
+    try:
+        for line in (HERE / ".env").read_text().splitlines():
+            key, sep, value = line.strip().partition("=")
+            if sep and not key.startswith("#"):
+                env[key.strip()] = value.strip().strip("\"'")
+    except FileNotFoundError:
+        pass
+    url = os.environ.get("IMMICH_SERVER_URL") or env.get("IMMICH_SERVER_URL")
+    key = os.environ.get("IMMICH_API_KEY") or env.get("IMMICH_API_KEY")
+    if not url or not key:
+        log(f"IMMICH_SERVER_URL and IMMICH_API_KEY must be set (environment or {HERE / '.env'})")
+        sys.exit(EX_CONFIG)
+    return url, key
+
+
+class Uploader:
+    def __init__(self, config, dry_run):
+        self.rules = [Rule(r) for r in config["source"]]
+        self.extensions = {e.lower() for e in config.get("extensions", [])}
+        self.dry_run = dry_run
+        self.immich = Immich(*load_credentials())
+        self.inotify = Inotify()
+        self.full_dirs = {}  # dir → (rule, captures)
+        self.pending = {}    # path → (deadline, (size, mtime))
+        try:
+            self.state = json.loads(STATE_FILE.read_text())
+        except FileNotFoundError:
+            self.state = {"done": {}, "seeded": []}
+
+    def save_state(self):
+        if self.dry_run:
+            return
+        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = STATE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self.state, indent=1))
+        tmp.replace(STATE_FILE)
+
+    def candidates(self, directory):
+        rule, _ = self.full_dirs[directory]
+        try:
+            entries = list(os.scandir(directory))
+        except OSError:
+            return
+        for e in entries:
+            if (e.is_file() and fnmatch.fnmatch(e.name, rule.file_glob)
+                    and Path(e.name).suffix.lower() in self.extensions):
+                yield Path(e.path)
+
+    def sync(self, rescan=False):
+        """Expand all patterns, update the watches and queue unseen files in new dirs."""
+        full, watch = {}, set()
+        for rule in self.rules:
+            if not rule.root.is_dir():
+                anchor = rule.root
+                while not anchor.is_dir():
+                    anchor = anchor.parent
+                watch.add(anchor)
+                continue
+            for d, caps, is_full in rule.expand():
+                watch.add(d)
+                if is_full:
+                    full.setdefault(d, (rule, caps))
+        self.inotify.set(watch)
+        new = full.keys() if rescan else full.keys() - self.full_dirs.keys()
+        self.full_dirs = full
+        for rule in self.rules:
+            if rule.name in self.state["seeded"]:
+                continue
+            if not rule.backfill:
+                for d, (r, _) in full.items():
+                    if r is rule:
+                        for f in self.candidates(d):
+                            st = f.stat()
+                            self.state["done"][str(f)] = [st.st_size, st.st_mtime_ns]
+                log(f"{rule.name}: existing files marked as done (backfill = false)")
+            self.state["seeded"].append(rule.name)
+            self.save_state()
+        if rescan:
+            done = self.state["done"]
+            for p in [p for p in done if not os.path.exists(p)]:
+                del done[p]
+        for d in new:
+            for f in self.candidates(d):
+                self.consider(f)
+
+    def consider(self, path):
+        if path.parent not in self.full_dirs:
+            return
+        rule, _ = self.full_dirs[path.parent]
+        if not fnmatch.fnmatch(path.name, rule.file_glob) or path.suffix.lower() not in self.extensions:
+            return
+        try:
+            st = path.stat()
+        except OSError:
+            return
+        sig = [st.st_size, st.st_mtime_ns]
+        if st.st_size == 0 or self.state["done"].get(str(path)) == sig:
+            return
+        self.pending[path] = (time.monotonic() + SETTLE, sig)
+
+    def process(self, force=False):
+        now, groups = time.monotonic(), {}
+        for path, (deadline, sig) in list(self.pending.items()):
+            if deadline > now and not force:
+                continue
+            del self.pending[path]
+            try:
+                st = path.stat()
+            except OSError:
+                continue
+            if [st.st_size, st.st_mtime_ns] != sig:  # still being written
+                self.consider(path)
+                continue
+            if path.parent not in self.full_dirs:
+                continue
+            rule, caps = self.full_dirs[path.parent]
+            key = (rule.render(rule.album, caps), tuple(rule.render(t, caps) for t in rule.tags), rule.archive)
+            groups.setdefault(key, []).append(path)
+        for (album, tags, archive), files in groups.items():
+            try:
+                self.upload(files, album, tags, archive)
+            except (OSError, ValueError, KeyError) as e:
+                log(f"error, retrying on the next rescan: {e}")
+
+    def upload(self, files, album, tags, archive):
+        log(f"upload {len(files)} file(s) → album '{album}'"
+            + (f", tags {list(tags)}" if tags else "") + (", archive" if archive else ""))
+        for f in files:
+            log(f"  {f}")
+        if self.dry_run:
+            return
+        # Tags are a CSV list for immich-go, so quote tags containing commas.
+        tag_args = [f'--tag="{t}"' if "," in t else f"--tag={t}" for t in tags]
+        cmd = ["immich-go", "upload", "from-folder", "--no-ui", "--pause-immich-jobs=false",
+               "--on-errors=continue", f"--into-album={album}", *tag_args, *map(str, files)]
+        env = os.environ | {"IMMICH_GO_UPLOAD_SERVER": self.immich.url, "IMMICH_GO_UPLOAD_API_KEY": self.immich.key}
+        res = subprocess.run(cmd, env=env, capture_output=True, text=True)
+        report = [line.strip() for line in res.stdout.splitlines() if re.search(r"^\s*\w[\w ]*:\s+[1-9]", line)]
+        log("  immich-go: " + "; ".join(report))
+        if res.returncode != 0:
+            log(f"  immich-go exited with {res.returncode}:\n{res.stderr.strip()[-2000:]}")
+
+        # Find the assets by checksum, then set description and visibility.
+        items = [{"id": str(i), "checksum": sha1(f)} for i, f in enumerate(files)]
+        results = self.immich.api("POST", "/assets/bulk-upload-check", {"assets": items})["results"]
+        ids = []
+        for r in results:
+            f = files[int(r["id"])]
+            asset = r.get("assetId")
+            if not asset:
+                log(f"  not on the server ({r.get('reason') or r['action']}), retrying later: {f}")
+                continue
+            if r.get("isTrashed"):
+                log(f"  asset is in the Immich trash, skipped: {f}")
+            else:
+                info = self.immich.api("GET", f"/assets/{asset}")
+                if not ((info.get("exifInfo") or {}).get("description") or "").strip():
+                    self.immich.api("PUT", f"/assets/{asset}", {"description": str(f)})
+                ids.append(asset)
+            st = f.stat()
+            self.state["done"][str(f)] = [st.st_size, st.st_mtime_ns]
+        if archive and ids:
+            self.immich.api("PUT", "/assets", {"ids": ids, "visibility": "archive"})
+        log(f"  done: {len(ids)} asset(s)" + (" archived" if archive and ids else ""))
+        self.save_state()
+
+    def run(self):
+        self.sync(rescan=True)
+        log(f"watching {len(self.inotify.by_path)} dir(s), {len(self.full_dirs)} with screenshots")
+        next_rescan = time.monotonic() + RESCAN
+        while True:
+            wake = min([d for d, _ in self.pending.values()] + [next_rescan])
+            resync = False
+            for directory, name, mask in self.inotify.read(max(wake - time.monotonic(), 0)):
+                if directory is None or mask & (IN_ISDIR | IN_IGNORED | IN_Q_OVERFLOW):
+                    resync = True
+                elif mask & (IN_CLOSE_WRITE | IN_MOVED_TO):
+                    self.consider(directory / name)
+            if time.monotonic() >= next_rescan:
+                self.sync(rescan=True)
+                next_rescan = time.monotonic() + RESCAN
+            elif resync:
+                self.sync()
+            self.process()
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--config", type=Path, default=HERE / "config.toml")
+    ap.add_argument("--once", action="store_true", help="upload everything pending and exit")
+    ap.add_argument("--dry-run", action="store_true", help="only log what would be uploaded")
+    args = ap.parse_args()
+    try:
+        config = tomllib.loads(args.config.read_text())
+        uploader = Uploader(config, args.dry_run)
+    except (OSError, tomllib.TOMLDecodeError, KeyError, ValueError) as e:
+        log(f"config error: {e}")
+        sys.exit(EX_CONFIG)
+    if args.once:
+        uploader.sync(rescan=True)
+        uploader.process(force=True)
+    else:
+        uploader.run()
+
+
+if __name__ == "__main__":
+    main()

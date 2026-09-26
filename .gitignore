@@ -1,2 +1,4 @@
 # Packages managed by Espanso itself (espanso install …)
 espanso/match/packages/
+.env
+__pycache__/

@@ -1,17 +1,12 @@
 [Unit]
-Description=Immich Screenshot Auto-Upload Service
+Description=Upload screenshots to Immich
 After=network-online.target
-Wants=network-online.target
 
 [Service]
-Type=simple
-ExecStart=/home/sam/.config/immich-go/upload-screenshots.sh
-Restart=always
-RestartSec=10
-
-# Logging
-StandardOutput=append:/home/sam/.config/immich-go/service.log
-StandardError=append:/home/sam/.config/immich-go/service-error.log
+ExecStart=%h/.config/immich-screenshots/immich-screenshots
+Restart=on-failure
+RestartSec=30
+RestartPreventExitStatus=78
 
 [Install]
 WantedBy=default.target

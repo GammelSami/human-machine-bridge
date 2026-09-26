@@ -1,0 +1,63 @@
+# Screenshot sources for immich-screenshots. The first matching source wins.
+#
+# path     Pattern for the screenshot files. `*` and `?` match within one folder
+#          name, `{name}` matches a whole folder name and can be used in album
+#          and tags, a trailing `**` folder matches any depth.
+# album    Immich album; immich-go creates it if missing.
+#          `{name|prism}` → PrismLauncher instance name, `{name|steam}` → Steam game name for an appid.
+# tags     Immich tags, `/` builds a hierarchy (optional).
+# archive  Archive the assets in Immich (default false = leave as is).
+# backfill Also upload files that already existed when the source was first
+#          seen (default true). Only read once per source name.
+#
+# The original file path always ends up in the asset description, unless the
+# asset already has one. Credentials: .env next to this file (not in git).
+
+extensions = [".png", ".jpg", ".jpeg", ".webp", ".avif", ".jxl", ".heic", ".gif", ".bmp"]
+
+# GNOME screenshot tool
+[[source]]
+name = "Desktop"
+path = "~/Bilder/Bildschirmfotos/*"
+album = "PC Screenshots"
+archive = true
+backfill = false
+
+# GPU Screen Recorder: "save in game folder" puts game screenshots into a subfolder
+[[source]]
+name = "GPU Screen Recorder, game"
+path = "~/Bilder/Screenshots/{game}/*"
+album = "{game}"
+tags = ["GPU Screen Recorder"]
+
+[[source]]
+name = "GPU Screen Recorder"
+path = "~/Bilder/Screenshots/*"
+album = "PC Screenshots"
+archive = true
+
+[[source]]
+name = "Minecraft"
+path = "~/.local/share/PrismLauncher/instances/{instance}/minecraft/screenshots/*"
+album = "Minecraft"
+tags = ["Minecraft/{instance|prism}"]
+
+[[source]]
+name = "Steam"
+path = "~/.local/share/Steam/userdata/*/760/remote/{appid}/screenshots/*"
+album = "{appid|steam}"
+tags = ["Steam"]
+
+# Games save to "My Pictures" in their Wine prefix (Cyberpunk 2077: Pictures/Cyberpunk 2077)
+[[source]]
+name = "Heroic"
+path = "~/Games/Heroic/Prefixes/{game}/drive_c/users/steamuser/Pictures/**/*"
+album = "{game}"
+tags = ["Heroic"]
+
+# Lutris has no common screenshot folder; add games as needed, e.g.:
+# [[source]]
+# name = "Lutris"
+# path = "~/Games/{game}/drive_c/users/*/Pictures/**/*"
+# album = "{game}"
+# tags = ["Lutris"]
