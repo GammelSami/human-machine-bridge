@@ -1,0 +1,99 @@
+#!/usr/bin/env node
+// Control the local TeamSpeak 3 client through its bundled ClientQuery plugin.
+
+const fs = require('node:fs');
+const net = require('node:net');
+const os = require('node:os');
+const path = require('node:path');
+
+const action = process.argv[2];
+const properties = {
+  mic: 'client_input_muted',
+  sound: 'client_output_muted',
+  afk: 'client_away',
+};
+if (action !== 'mic-state' && !Object.hasOwn(properties, action)) {
+  console.error('Usage: teamspeak3-hotkey mic-state|mic|sound|afk');
+  process.exit(2);
+}
+
+const settings = path.join(os.homedir(), '.ts3client', 'clientquery.ini');
+let apiKey;
+try {
+  apiKey = fs.readFileSync(settings, 'utf8').match(/^api_key=(.+)$/m)?.[1]?.trim();
+} catch (error) {
+  if (error.code !== 'ENOENT') throw error;
+}
+if (!apiKey) {
+  console.error('TeamSpeak 3 ClientQuery API key is unavailable');
+  process.exit(1);
+}
+
+const socket = net.createConnection({ host: '127.0.0.1', port: 25639 });
+socket.setTimeout(5000);
+let pending;
+let buffer = '';
+
+socket.on('error', (error) => {
+  if (pending) {
+    pending.reject(error);
+    pending = undefined;
+  }
+});
+
+socket.on('data', (data) => {
+  buffer += data.toString('utf8');
+  let newline;
+  while ((newline = buffer.indexOf('\n')) !== -1) {
+    const line = buffer.slice(0, newline).trim();
+    buffer = buffer.slice(newline + 1);
+    if (!pending) continue;
+    if (/^error id=/.test(line)) {
+      const { resolve, reject, lines } = pending;
+      pending = undefined;
+      if (/^error id=0(?: |$)/.test(line)) resolve(lines);
+      else reject(new Error(`ClientQuery: ${line}`));
+    } else if (line) {
+      pending.lines.push(line);
+    }
+  }
+});
+
+function command(line) {
+  return new Promise((resolve, reject) => {
+    if (pending) return reject(new Error('ClientQuery command overlap'));
+    pending = { resolve, reject, lines: [] };
+    socket.write(`${line}\n`);
+  });
+}
+
+async function run() {
+  await new Promise((resolve, reject) => {
+    socket.once('connect', resolve);
+    socket.once('error', reject);
+  });
+  await command(`auth apikey=${apiKey}`);
+  await command('use');
+  const whoami = (await command('whoami')).join(' ');
+  const clientId = whoami.match(/(?:^| )clid=(\d+)/)?.[1];
+  if (!clientId) throw new Error('ClientQuery did not identify the local client');
+
+  const property = action === 'mic-state' ? properties.mic : properties[action];
+  const variable = (await command(`clientvariable clid=${clientId} ${property}`)).join(' ');
+  const current = variable.match(new RegExp(`(?:^| )${property}=([01])`))?.[1];
+  if (current === undefined) throw new Error(`ClientQuery did not return ${property}`);
+
+  if (action === 'mic-state') {
+    console.log(current === '1' ? 'muted' : 'unmuted');
+  } else {
+    await command(`clientupdate ${property}=${current === '1' ? '0' : '1'}`);
+  }
+  socket.end();
+}
+
+socket.on('timeout', () => socket.destroy(new Error('ClientQuery timed out')));
+run().catch((error) => {
+  console.error(`TeamSpeak 3: ${error.message}`);
+  socket.destroy();
+  process.exitCode = 1;
+});

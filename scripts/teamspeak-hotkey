@@ -1,0 +1,105 @@
+#!/usr/bin/env node
+// Trigger a TeamSpeak 6 key binding through its local Remote Apps socket.
+
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+
+const action = process.argv[2];
+const buttons = {
+  mic: 'hmb.mic',
+  sound: 'hmb.sound',
+  afk: 'hmb.afk',
+};
+
+if (action !== 'authorize' && action !== 'mic-state' && !Object.hasOwn(buttons, action)) {
+  console.error('Usage: teamspeak-hotkey authorize|mic-state|mic|sound|afk');
+  process.exit(2);
+}
+
+const configDir = path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'human-machine-bridge');
+const keyFile = path.join(configDir, 'teamspeak-remote-api-key');
+let apiKey = '';
+try {
+  apiKey = fs.readFileSync(keyFile, 'utf8').trim();
+} catch (error) {
+  if (error.code !== 'ENOENT') throw error;
+}
+
+const socket = new WebSocket('ws://127.0.0.1:5899');
+let finished = false;
+const timeout = setTimeout(() => fail('TeamSpeak did not authorize the local shortcut'), action === 'authorize' ? 120000 : 30000);
+
+function fail(message) {
+  if (finished) return;
+  finished = true;
+  clearTimeout(timeout);
+  console.error(message);
+  socket.close();
+  process.exitCode = 1;
+}
+
+socket.addEventListener('open', () => {
+  socket.send(JSON.stringify({
+    type: 'auth',
+    payload: {
+      identifier: 'local.human-machine-bridge',
+      version: '1',
+      name: 'Human Machine Bridge shortcuts',
+      description: 'Local keyboard shortcuts for TeamSpeak',
+      content: { apiKey },
+    },
+  }));
+});
+
+socket.addEventListener('message', (event) => {
+  let reply;
+  try {
+    reply = JSON.parse(event.data);
+  } catch {
+    return;
+  }
+  if (reply.type !== 'auth' || finished) return;
+  if (reply.status?.code !== 0) {
+    fail(`TeamSpeak authorization failed: ${reply.status?.message || 'unknown error'}`);
+    return;
+  }
+  if (typeof reply.payload?.apiKey !== 'string' || !reply.payload.apiKey) {
+    fail('TeamSpeak did not return an API key');
+    return;
+  }
+  if (reply.payload.apiKey !== apiKey) {
+    fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(keyFile, `${reply.payload.apiKey}\n`, { mode: 0o600 });
+  }
+  if (action === 'mic-state') {
+    const connections = reply.payload.connections || [];
+    const connection = connections.find(
+      (item) => item.id === reply.payload.currentConnectionId,
+    ) || (connections.length === 1 ? connections[0] : undefined);
+    const ownClient = connection?.clientInfos?.find(
+      (item) => item.id === connection.clientId,
+    );
+    if (typeof ownClient?.properties?.inputMuted !== 'boolean') {
+      fail('TeamSpeak microphone state is unavailable');
+      return;
+    }
+    console.log(ownClient.properties.inputMuted ? 'muted' : 'unmuted');
+    socket.close();
+  } else if (action !== 'authorize') {
+    socket.send(JSON.stringify({ type: 'buttonPress', payload: { button: buttons[action], state: true } }));
+    setTimeout(() => {
+      socket.send(JSON.stringify({ type: 'buttonPress', payload: { button: buttons[action], state: false } }));
+      setTimeout(() => socket.close(), 50);
+    }, 80);
+  } else {
+    socket.close();
+  }
+  finished = true;
+  clearTimeout(timeout);
+});
+
+socket.addEventListener('error', () => fail('TeamSpeak Remote Apps is unavailable on 127.0.0.1:5899'));
+socket.addEventListener('close', () => {
+  if (!finished) fail('TeamSpeak closed the connection before authorization');
+});

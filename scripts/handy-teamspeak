@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""Toggle Handy while temporarily muting TeamSpeak's recording streams."""
+
+import fcntl
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+
+runtime = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp"))
+state_path = runtime / "hmb-handy-teamspeak.json"
+lock_path = runtime / "hmb-handy-teamspeak.lock"
+remote_hotkeys = (
+    Path(__file__).with_name("teamspeak-hotkey"),
+    Path(__file__).with_name("teamspeak3-hotkey"),
+)
+
+
+def source_outputs():
+    result = subprocess.run(
+        ["pactl", "--format=json", "list", "source-outputs"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(result.stdout)
+
+
+def teamspeak_streams():
+    return {
+        str(stream["index"]): bool(stream["mute"])
+        for stream in source_outputs()
+        if stream.get("properties", {}).get("application.process.binary", "").lower()
+        in {"teamspeak", "ts3client", "ts3client_linux_amd64"}
+    }
+
+
+def set_mute(index, muted):
+    subprocess.run(
+        ["pactl", "set-source-output-mute", str(index), "1" if muted else "0"],
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
+
+
+def teamspeak_mic_state(remote_hotkey):
+    result = subprocess.run(
+        [str(remote_hotkey), "mic-state"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip()
+
+
+def toggle_teamspeak_mic(remote_hotkey):
+    subprocess.run([str(remote_hotkey), "mic"], check=True)
+
+
+with lock_path.open("w") as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    try:
+        if state_path.exists():
+            previous = json.loads(state_path.read_text())
+            subprocess.run(["handy", "--toggle-transcription"], check=True)
+            try:
+                for name in previous["mic_changed"]:
+                    remote_hotkey = Path(__file__).with_name(name)
+                    if teamspeak_mic_state(remote_hotkey) == "muted":
+                        toggle_teamspeak_mic(remote_hotkey)
+            finally:
+                current = teamspeak_streams()
+                for index, was_muted in previous["streams"].items():
+                    if index in current:
+                        set_mute(index, was_muted)
+                state_path.unlink()
+        else:
+            streams = teamspeak_streams()
+            for index in streams:
+                set_mute(index, True)
+            mic_changed = []
+            try:
+                for remote_hotkey in remote_hotkeys:
+                    if teamspeak_mic_state(remote_hotkey) == "unmuted":
+                        toggle_teamspeak_mic(remote_hotkey)
+                        mic_changed.append(remote_hotkey.name)
+                subprocess.run(["handy", "--toggle-transcription"], check=True)
+            except Exception:
+                for name in mic_changed:
+                    remote_hotkey = Path(__file__).with_name(name)
+                    if teamspeak_mic_state(remote_hotkey) == "muted":
+                        toggle_teamspeak_mic(remote_hotkey)
+                for index, was_muted in streams.items():
+                    set_mute(index, was_muted)
+                raise
+            state_path.write_text(json.dumps({"streams": streams, "mic_changed": mic_changed}))
+    except (OSError, subprocess.CalledProcessError, json.JSONDecodeError) as error:
+        print(f"handy-teamspeak: {error}", file=sys.stderr)
+        sys.exit(1)

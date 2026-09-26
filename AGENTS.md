@@ -29,7 +29,8 @@ snippets, dictation.
 - `keymapper/keymapper.conf` → `~/.config/keymapper.conf` – keys/mouse buttons → actions.
 - `scripts/` – helper scripts called from keymapper (referenced via `$HOME/Git/human-machine-bridge/scripts/…`):
   `debounce` (generic, for mouse-button actions), `minecraft-perspective`,
-  `clipboard-qr` (also symlinked to `~/.local/bin/`).
+  `clipboard-qr` (also symlinked to `~/.local/bin/`), `teamspeak-action`,
+  `teamspeak-hotkey`, `teamspeak3-hotkey`, `handy-teamspeak`.
 - `run-or-raise/shortcuts.conf` → `~/.config/run-or-raise/shortcuts.conf` – launch/raise
   apps by shortcut (GNOME-specific window layer).
 - `immich-screenshots/` → `~/.config/immich-screenshots` – screenshot upload to Immich;
@@ -70,9 +71,9 @@ snippets, dictation.
 ### Handy (dictation, `handy-bin`)
 - Model: Parakeet TDT 0.6B V3. Settings are managed by the app itself
   (`~/.local/share/com.pais.handy/settings_store.json`, not in the repo).
-- Shortcuts (keymapper): mouse button 5 (debounced) and Ctrl+Space → 
-  `handy --toggle-transcription` (on GNOME Wayland, Handy cannot grab global
-  shortcuts itself).
+- Shortcuts (keymapper): mouse button 5 (debounced) and Ctrl+Space →
+  `scripts/handy-teamspeak` → `handy --toggle-transcription` (on GNOME Wayland,
+  Handy cannot grab global shortcuts itself).
 - Text output: `ydotool` (user service `ydotool.service`), pasting via Ctrl+V –
   direct typing breaks umlauts and y/z on the German layout. `wtype` does not
   work on GNOME.
@@ -80,6 +81,27 @@ snippets, dictation.
   wrong window (known Handy issue; not caused by the "Steal My Focus Window"
   extension – tested).
 - The tray icon needs the extension `appindicatorsupport@rgcjonas.gmail.com`.
+
+### TeamSpeak 6
+- The client is installed manually at `~/.local/bin/teamspeak-client`; its
+  desktop launcher forces X11. GNOME Wayland still does not deliver its hotkeys
+  while another Wayland application is focused.
+- F14/F15/F16 (Corsair G-keys) trigger microphone mute, speaker mute and AFK
+  through `scripts/teamspeak-action`. For TS6 it uses `scripts/teamspeak-hotkey`
+  and TeamSpeak Remote Apps. The three
+  virtual keys `hmb.mic`, `hmb.sound`, `hmb.afk` are bound in TeamSpeak itself.
+- The Remote Apps API key is stored at
+  `~/.config/human-machine-bridge/teamspeak-remote-api-key` (mode 0600), outside
+  this repo. Reauthorize with `scripts/teamspeak-hotkey authorize` if needed.
+- `scripts/handy-teamspeak` makes mouse button 5 and Ctrl+Space temporarily mute
+  TeamSpeak while Handy transcribes, then restores the prior microphone state.
+  It also mutes the TeamSpeak recording stream in PipeWire as a safeguard.
+- TeamSpeak 3 uses its bundled ClientQuery plugin through
+  `scripts/teamspeak3-hotkey` for the same F14/F15/F16 actions. The plugin reads
+  its API key from `~/.ts3client/clientquery.ini`, outside this repo; keep that
+  file mode 0600. ClientQuery selects the active TS3 server connection. The
+  Handy wrapper protects both TS6 and TS3 microphone states and recording
+  streams when they are connected.
 
 ### Run or Raise (GNOME extension `run-or-raise@edvard.cz`)
 - Launches an app, raises it, or cycles its windows – runs inside GNOME Shell,
