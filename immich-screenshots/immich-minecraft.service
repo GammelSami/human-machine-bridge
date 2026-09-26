@@ -1,0 +1,17 @@
+[Unit]
+Description=Immich Minecraft Screenshot Auto-Upload Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/home/sam/.config/immich-go/upload-minecraft.sh
+Restart=always
+RestartSec=10
+
+# Logging
+StandardOutput=append:/home/sam/.config/immich-go/service-minecraft.log
+StandardError=append:/home/sam/.config/immich-go/service-minecraft-error.log
+
+[Install]
+WantedBy=default.target
