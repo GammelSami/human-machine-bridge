@@ -380,7 +380,10 @@ class Uploader:
         report = [line.strip() for line in res.stdout.splitlines() if re.search(r"^\s*\w[\w ]*:\s+[1-9]", line)]
         log("  immich-go: " + "; ".join(report))
         if res.returncode != 0:
-            log(f"  immich-go exited with {res.returncode}:\n{res.stderr.strip()[-2000:]}")
+            # On errors immich-go also prints its usage; the indented lines are that.
+            error = [line for line in res.stderr.splitlines() if line.strip() and not line[0].isspace()
+                     and line not in ("Usage:", "Flags:", "Global Flags:")]
+            log(f"  immich-go exited with {res.returncode}: " + " | ".join(error)[-1000:])
 
         # Find the assets by checksum, then set description and visibility.
         items = [{"id": str(i), "checksum": sha1(f)} for i, f in enumerate(files)]
