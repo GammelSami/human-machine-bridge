@@ -33,6 +33,8 @@ snippets, dictation.
   `teamspeak-hotkey`, `teamspeak3-hotkey`, `handy-teamspeak`.
 - `scripts/transcribe` – transcribes media files with Handy; symlinked to
   `~/bin/transcribe`.
+- `scripts/update-and-poweroff` – called by the Power Off Options GNOME extension;
+  updates repository/AUR packages and system/user Flatpaks before powering off.
 - `run-or-raise/shortcuts.conf` → `~/.config/run-or-raise/shortcuts.conf` – launch/raise
   apps by shortcut (GNOME-specific window layer).
 - `immich-screenshots/` → `~/.config/immich-screenshots` – screenshot upload to Immich;
