@@ -1,8 +1,9 @@
 # human-machine-bridge
 
-Bridges between human and machine on the workstation (CachyOS, GNOME 50 on
-Wayland, German keyboard layout): keyboard shortcuts, mouse buttons, text
-snippets, dictation.
+Bridges between human and machine: keyboard shortcuts, mouse buttons, text
+snippets, dictation. Two machines, both CachyOS on Wayland with German keyboard
+layout: the home workstation (GNOME 50) and the work laptop (KDE Plasma 6, on
+branch `work`, which adds its hardware tweaks on top of `main`).
 
 ## Language
 
@@ -31,7 +32,7 @@ snippets, dictation.
 - `scripts/` – helper scripts called from keymapper (referenced via `$HOME/Git/human-machine-bridge/scripts/…`):
   `debounce` (generic, for mouse-button actions), `minecraft-perspective`,
   `clipboard-qr` (also symlinked to `~/.local/bin/`), `teamspeak-action`,
-  `teamspeak-hotkey`, `teamspeak3-hotkey`, `handy-teamspeak`.
+  `teamspeak-hotkey`, `teamspeak3-hotkey`, `handy-teamspeak`, `run-or-raise`.
 - `scripts/transcribe` – transcribes media files with Handy; symlinked to
   `~/bin/transcribe`.
 - `run-or-raise/shortcuts.conf` → `~/.config/run-or-raise/shortcuts.conf` – launch/raise
@@ -46,7 +47,13 @@ snippets, dictation.
   virtual input devices exclusively; `keymapper -u` starts via
   `/etc/xdg/autostart/keymapper.desktop` and reloads the config on change.
 - Per-application rules (`[class = "…"]`) need the bundled GNOME extension
-  `keymapper@houmain.github.com` on Wayland (enabled; active after next login).
+  `keymapper@houmain.github.com` or, on KDE, the bundled KWin script `keymapper`
+  (`kwinrc` → `[Plugins] keymapperEnabled=true`).
+- Desktop-specific mappings sit in `[getenv["XDG_CURRENT_DESKTOP"] = "GNOME"]`
+  and `= "KDE"` blocks (exact match; a non-matching block is dropped at load).
+- Each grabbed device is re-emitted as a virtual copy named `<name>; keymapper`.
+  Desktop per-device settings (pointer speed/acceleration) must target that
+  copy; on KDE `~/.config/kcminputrc` has a `…; keymapper` section per mouse.
 - Characters missing from the German layout are typed via Ctrl+Shift+U hex
   input – works in GTK/IBus apps, not everywhere.
 - Emergency stop if input misbehaves: `sudo systemctl stop keymapperd`.
@@ -54,9 +61,9 @@ snippets, dictation.
   not apply to mapped mouse buttons. Actions on mouse buttons that must not
   fire twice go through `scripts/debounce`.
 - Debugging: `keymapper -u -v` logs every executed command.
-- All custom shortcuts live here; GNOME custom shortcuts (media-keys) are
-  intentionally empty. GNOME's own window shortcuts (Alt+Tab, Super+M, …) stay
-  in GNOME.
+- All custom shortcuts live here; GNOME custom shortcuts (media-keys) and KDE
+  custom shortcuts are intentionally empty. The desktop's own window shortcuts
+  (Alt+Tab, Super+M, …) stay in the desktop.
 - Programs launched by keymapper inherit its environment. When restarting
   `keymapper`/`handy` from a terminal inside another app (e.g. T3 Code, which
   sets `LD_LIBRARY_PATH` and `ELECTRON_RUN_AS_NODE`), use the clean session env:
@@ -119,6 +126,8 @@ snippets, dictation.
   short tap: a held key
   auto-repeats, Run or Raise then cycles windows continuously and GNOME Shell
   stalls (frozen mouse pointer). Do the same for other Run or Raise keys if held.
+- KDE counterpart: the KDE block in `keymapper.conf` calls `scripts/run-or-raise`
+  (needs `kdotool`) for the same keys; F19 opens Dolphin there.
 
 ### immich-screenshots
 - `.env` holds the Immich API key: it stays unread by agents and out of git.

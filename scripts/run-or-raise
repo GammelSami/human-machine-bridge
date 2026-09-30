@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# KDE Plasma counterpart of the GNOME extension Run or Raise, called from keymapper.
+# Usage: run-or-raise <class-regex> <command> [args…]
+# Launches the command if no window matches, raises the window otherwise,
+# and cycles through the matching windows while one of them is focused.
+set -euo pipefail
+
+class=$1
+shift
+
+mapfile -t ids < <(kdotool search --class "$class")
+(( ${#ids[@]} )) || exec "$@"
+
+active=$(kdotool getactivewindow)
+next=${ids[0]}
+for i in "${!ids[@]}"; do
+  [[ ${ids[i]} == "$active" ]] && next=${ids[(i + 1) % ${#ids[@]}]}
+done
+kdotool windowactivate "$next"
