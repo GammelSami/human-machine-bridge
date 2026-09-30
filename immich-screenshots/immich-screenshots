@@ -258,7 +258,7 @@ def load_credentials():
 
 class Uploader:
     def __init__(self, config, dry_run):
-        self.rules = [Rule(r) for r in config["source"]]
+        self.rules = [Rule(r) for r in config["source"] if r.get("host", os.uname().nodename) == os.uname().nodename]
         self.extensions = {e.lower() for e in config.get("extensions", [])}
         self.dry_run = dry_run
         self.immich = Immich(*load_credentials())

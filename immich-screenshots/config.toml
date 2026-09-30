@@ -9,13 +9,30 @@
 # archive  Archive the assets in Immich (default false = leave as is).
 # backfill Also upload files that already existed when the source was first
 #          seen (default true). Only read once per source name.
+# host     Only use this source on the machine with this hostname (optional).
 #
 # The original file path always ends up in the asset description, unless the
 # asset already has one. Credentials: .env next to this file (not in git).
 
 extensions = [".png", ".jpg", ".jpeg", ".webp", ".avif", ".jxl", ".heic", ".gif", ".bmp"]
 
-# GNOME screenshot tool
+# Work laptop: desktop screenshots go to their own album (games stay as below)
+[[source]]
+name = "Desktop, work"
+host = "Thinkpad"
+path = "~/Bilder/Bildschirmfotos/*"
+album = "Work Screenshots"
+archive = true
+backfill = false
+
+[[source]]
+name = "GPU Screen Recorder, work"
+host = "Thinkpad"
+path = "~/Bilder/Screenshots/*"
+album = "Work Screenshots"
+archive = true
+
+# GNOME screenshot tool (KDE's Spectacle saves here too)
 [[source]]
 name = "Desktop"
 path = "~/Bilder/Bildschirmfotos/*"
