@@ -6,7 +6,7 @@ set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 link() {
-  local src="$repo/$1" dst="$2"
+  local src="$repo${1:+/$1}" dst="$2"
   if [[ -L "$dst" && "$(readlink "$dst")" == "$src" ]]; then
     echo "ok       $dst"
     return
@@ -21,6 +21,7 @@ link() {
   echo "linked   $dst → $src"
 }
 
+link ''                        "$HOME/Git/human-machine-bridge"
 link espanso                   "$HOME/.config/espanso"
 link keymapper/keymapper.conf  "$HOME/.config/keymapper.conf"
 link run-or-raise/shortcuts.conf "$HOME/.config/run-or-raise/shortcuts.conf"

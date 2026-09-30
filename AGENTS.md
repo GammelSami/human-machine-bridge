@@ -24,7 +24,8 @@ snippets, dictation.
 
 - `AGENTS.md` – read natively by Claude Code, Codex and OpenCode; no `CLAUDE.md` needed.
 - `install.sh` – symlinks the expected config paths into this repo. Idempotent;
-  existing files are moved to `*.bak-<date>`, never deleted.
+  existing files are moved to `*.bak-<date>`, never deleted. Also links
+  `~/Git/human-machine-bridge` to the repo, so scripts find it wherever it is cloned.
 - `espanso/` → `~/.config/espanso` – text snippets.
 - `keymapper/keymapper.conf` → `~/.config/keymapper.conf` – keys/mouse buttons → actions.
 - `scripts/` – helper scripts called from keymapper (referenced via `$HOME/Git/human-machine-bridge/scripts/…`):
