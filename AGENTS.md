@@ -2,8 +2,17 @@
 
 Bridges between human and machine: keyboard shortcuts, mouse buttons, text
 snippets, dictation. Two machines, both CachyOS on Wayland with German keyboard
-layout: the home workstation (GNOME 50) and the work laptop (KDE Plasma 6, on
-branch `work`, which adds its hardware tweaks on top of `main`).
+layout: the home workstation (GNOME 50) and the work laptop (KDE Plasma 6).
+
+## Branches
+
+- `main` is the home workstation (CachyOS, GNOME). Only what that machine uses
+  goes there.
+- `work` is the work laptop: `main` plus everything laptop-specific – KDE
+  support, its hardware tweaks, work-only settings. Commit such changes on
+  `work`, never on `main`, even if they would be harmless at home.
+- Changes both machines need go to `main` and are then merged into `work`.
+  Never merge `work` into `main`.
 
 ## Language
 
