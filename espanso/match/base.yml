@@ -26,7 +26,43 @@ matches:
   - trigger: " ema "
     replace: " E-Mail-Adresse "
   - trigger: " email "
-    replace: "E-Mail"
+    replace: " E-Mail "
+
+  - trigger: ":support"
+    replace: "https://mdl.hs-duesseldorf.de/support"
+
+  - trigger: " zb "
+    replace: " z. B. "
+
+  - trigger: ":dat"
+    replace: "{{d}}"
+    vars:
+      - name: d
+        type: date
+        params:
+          format: "%d.%m.%Y"
+
+  - trigger: ":datlang"
+    replace: "{{d}}"
+    vars:
+      - name: d
+        type: date
+        params:
+          format: "%-d. %B %Y"
+          locale: "de_DE"
+
+  - trigger: ":mfg"
+    replace: |-
+      Mit freundlichen Grüßen
+      Samuel Lang
+
+  - trigger: ":details"
+    replace: |-
+      Damit ich das nachvollziehen kann, brauche ich bitte noch:
+      - den Kursnamen bzw. die Kurs-ID
+      - Ihren Browser (Firefox, Chrome, Edge ...)
+      - wann der Fehler zuletzt aufgetreten ist
+      - falls möglich einen Screenshot der Fehlermeldung
 
   # Print the current date
   - trigger: ":date"
