@@ -29,12 +29,20 @@ def source_outputs():
 
 
 def teamspeak_streams():
-    return {
-        str(stream["index"]): bool(stream["mute"])
+    return [
+        stream["index"]
         for stream in source_outputs()
         if stream.get("properties", {}).get("application.process.binary", "").lower()
         in {"teamspeak", "ts3client", "ts3client_linux_amd64"}
-    }
+    ]
+
+
+def set_teamspeak_streams_mute(muted):
+    # WirePlumber stores the mute per application and applies it to every new
+    # TeamSpeak stream, so unmute always covers all current streams, including
+    # ones that appeared while Handy was recording.
+    for index in teamspeak_streams():
+        set_mute(index, muted)
 
 
 def set_mute(index, muted):
@@ -72,15 +80,10 @@ with lock_path.open("w") as lock:
                     if teamspeak_mic_state(remote_hotkey) == "muted":
                         toggle_teamspeak_mic(remote_hotkey)
             finally:
-                current = teamspeak_streams()
-                for index, was_muted in previous["streams"].items():
-                    if index in current:
-                        set_mute(index, was_muted)
+                set_teamspeak_streams_mute(False)
                 state_path.unlink()
         else:
-            streams = teamspeak_streams()
-            for index in streams:
-                set_mute(index, True)
+            set_teamspeak_streams_mute(True)
             mic_changed = []
             try:
                 for remote_hotkey in remote_hotkeys:
@@ -93,10 +96,9 @@ with lock_path.open("w") as lock:
                     remote_hotkey = Path(__file__).with_name(name)
                     if teamspeak_mic_state(remote_hotkey) == "muted":
                         toggle_teamspeak_mic(remote_hotkey)
-                for index, was_muted in streams.items():
-                    set_mute(index, was_muted)
+                set_teamspeak_streams_mute(False)
                 raise
-            state_path.write_text(json.dumps({"streams": streams, "mic_changed": mic_changed}))
+            state_path.write_text(json.dumps({"mic_changed": mic_changed}))
     except (OSError, subprocess.CalledProcessError, json.JSONDecodeError) as error:
         print(f"handy-teamspeak: {error}", file=sys.stderr)
         sys.exit(1)

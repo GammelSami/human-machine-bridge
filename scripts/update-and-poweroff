@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Update packages, Flatpaks, and Better Tray Icons before powering off.
+set -Eeuo pipefail
+
+script=$(readlink -f -- "$0")
+
+case ${1-} in
+    '')
+        exec kgx --title='Updates und herunterfahren' -- "$script" --run
+        ;;
+    --run)
+        exec 9>"${XDG_RUNTIME_DIR:-/tmp}/hmb-update-and-poweroff.lock"
+        if ! flock -n 9; then
+            printf 'Ein Update läuft bereits.\n'
+            read -r -p 'Zum Schließen Enter drücken … ' _
+            exit 1
+        fi
+
+        printf 'Aktualisiere Repository- und AUR-Pakete …\n'
+        if systemd-inhibit --what=shutdown:sleep --mode=block \
+            --who='Updates und herunterfahren' \
+            --why='Paketaktualisierung läuft' \
+            "$script" --update; then
+            printf '\nUpdates abgeschlossen. Rechner wird heruntergefahren …\n'
+            if systemctl poweroff; then
+                exit 0
+            fi
+        fi
+
+        printf '\nUpdate oder Herunterfahren fehlgeschlagen. Rechner bleibt an.\n' >&2
+        read -r -p 'Zum Schließen Enter drücken … ' _
+        exit 1
+        ;;
+    --update)
+        paru -Syu --noconfirm --skipreview --noupgrademenu
+        flatpak update --system --assumeyes --noninteractive
+        flatpak update --user --assumeyes --noninteractive
+
+        printf 'Prüfe Better Tray Icons …\n'
+        release=$(curl -fsSL --retry 2 --max-time 30 \
+            'https://api.github.com/repos/nexaknight/BetterTrayIcons/releases?per_page=30' |
+            jq -er 'first(.[] | select(.draft == false and .prerelease == false) |
+                . as $release | .assets[]? |
+                select(.name == "BetterTrayIcons@nexaknight.com.zip") |
+                [$release.tag_name, .browser_download_url] | @tsv)')
+        IFS=$'\t' read -r tag download_url <<< "$release"
+        metadata="$HOME/.local/share/gnome-shell/extensions/BetterTrayIcons@nexaknight.com/metadata.json"
+        installed_version=$(jq -r '."version-name" // empty' "$metadata" 2>/dev/null || :)
+        if [[ -z $installed_version ]] || (( $(vercmp "${tag#v}" "$installed_version") > 0 )); then
+            archive=$(mktemp --suffix=.zip)
+            trap 'rm -f -- "$archive"' EXIT
+            curl -fL --retry 2 --max-time 60 --proto '=https' --proto-redir '=https' \
+                -o "$archive" "$download_url"
+            unzip -p "$archive" metadata.json |
+                jq -e --arg version "${tag#v}" \
+                    'select(.uuid == "BetterTrayIcons@nexaknight.com" and ."version-name" == $version)' \
+                    >/dev/null
+            gnome-extensions install --force "$archive"
+            printf 'Better Tray Icons %s installiert (aktiv nach dem nächsten Login).\n' "${tag#v}"
+        else
+            printf 'Better Tray Icons %s ist aktuell.\n' "$installed_version"
+        fi
+        ;;
+    *)
+        printf 'Unbekannte Option: %s\n' "$1" >&2
+        exit 2
+        ;;
+esac
