@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Update packages, Flatpaks, and Better Tray Icons before powering off.
+# Update packages, Flatpaks, the T3 Code service, and Better Tray Icons before powering off.
 set -Eeuo pipefail
 
 script=$(readlink -f -- "$0")
@@ -35,6 +35,21 @@ case ${1-} in
         paru -Syu --noconfirm --skipreview --noupgrademenu
         flatpak update --system --assumeyes --noninteractive
         flatpak update --user --assumeyes --noninteractive
+
+        # The T3 Code service runs its own copy of t3 under ~/.t3/runtime, which
+        # the AUR package does not touch; move it to the package's version.
+        t3_state="$HOME/.t3/runtime/service-state.json"
+        if [[ -f $t3_state ]] && pacman -Q t3code-bin &>/dev/null; then
+            t3_active=$(jq -er '.activeVersion' "$t3_state")
+            t3_package=$(pacman -Q t3code-bin | awk '{ print $2 }')
+            t3_package=${t3_package%-*}
+            if [[ $t3_package != "$t3_active" ]]; then
+                printf 'Aktualisiere T3-Code-Dienst %s → %s …\n' "$t3_active" "$t3_package"
+                "$HOME/.t3/runtime/versions/$t3_active/t3" update --yes "$t3_package"
+            else
+                printf 'T3-Code-Dienst %s ist aktuell.\n' "$t3_active"
+            fi
+        fi
 
         printf 'Prüfe Better Tray Icons …\n'
         release=$(curl -fsSL --retry 2 --max-time 30 \

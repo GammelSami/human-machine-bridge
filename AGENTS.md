@@ -35,7 +35,8 @@ snippets, dictation.
 - `scripts/transcribe` – transcribes media files with Handy; symlinked to
   `~/bin/transcribe`.
 - `scripts/update-and-poweroff` – called by the Power Off Options GNOME extension;
-  updates repository/AUR packages and system/user Flatpaks before powering off.
+  updates repository/AUR packages, system/user Flatpaks and the T3 Code service
+  (to the `t3code-bin` package version via `t3 update`) before powering off.
 - `run-or-raise/shortcuts.conf` → `~/.config/run-or-raise/shortcuts.conf` – launch/raise
   apps by shortcut (GNOME-specific window layer).
 - `immich-screenshots/` → `~/.config/immich-screenshots` – screenshot upload to Immich;
