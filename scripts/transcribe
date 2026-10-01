@@ -8,7 +8,8 @@ Usage: transcribe <media-file> [language] [--output-file <path>]
 
 Arguments:
   media-file     Path to an audio or video file
-  language       Optional legacy argument; Handy detects the language automatically
+  language       Optional check only; Handy's CLI has no language option and uses
+                 the language selected in the Handy app (warns on a mismatch)
 
 Options:
   --output-file  Write the transcript to this file instead of stdout
@@ -62,15 +63,41 @@ if [[ ! -f $input ]]; then
 fi
 
 if [[ $language != auto ]]; then
-    echo 'transcribe: Handy detects the language automatically; the language argument is ignored' >&2
+    settings=$HOME/.local/share/com.pais.handy/settings_store.json
+    selected=$(python -c 'import json, sys; print(json.load(open(sys.argv[1]))["settings"]["selected_language"])' "$settings" 2>/dev/null || echo unknown)
+    if [[ $language != "$selected" ]]; then
+        echo "transcribe: Handy uses the language selected in its app ($selected), not '$language'; change it there if needed" >&2
+    fi
 fi
 
 temp_wav=$(mktemp --suffix=.wav)
+temp_json=$(mktemp)
 temp_text=$(mktemp)
-trap 'rm -f "$temp_wav" "$temp_text"' EXIT
+trap 'rm -f "$temp_wav" "$temp_json" "$temp_text"' EXIT
+
+extract_text() {
+    python -c 'import json, sys; print(json.load(sys.stdin)["text"])' < "$temp_json" > "$temp_text" 2>/dev/null
+}
 
 ffmpeg -nostdin -loglevel error -i "$input" -vn -ar 16000 -ac 1 -c:a pcm_s16le -y "$temp_wav"
-handy --transcribe-file "$temp_wav" --json | python -c 'import json, sys; print(json.load(sys.stdin)["text"])' > "$temp_text"
+handy --transcribe-file "$temp_wav" --json > "$temp_json" || true
+
+# The GPU run fails without JSON output when VRAM is short (e.g. while a local
+# LLM occupies it); retry on the CPU, which is slower but always has memory.
+if ! extract_text; then
+    # --list-devices aborts after printing the list, so ignore its exit status.
+    cpu_index=$(handy --list-devices 2>/dev/null | sed -n 's/.*index=\([0-9]\+\) kind=cpu.*/\1/p' | head -n 1 || true)
+    if [[ -z $cpu_index ]]; then
+        echo 'transcribe: transcription failed and no CPU device was found for a retry' >&2
+        exit 1
+    fi
+    echo 'transcribe: GPU transcription failed (VRAM full?); retrying on the CPU' >&2
+    handy --transcribe-file "$temp_wav" --json --device-index "$cpu_index" > "$temp_json" || true
+    if ! extract_text; then
+        echo 'transcribe: transcription failed on the CPU as well' >&2
+        exit 1
+    fi
+fi
 
 if [[ -n $output_file ]]; then
     cp "$temp_text" "$output_file"
